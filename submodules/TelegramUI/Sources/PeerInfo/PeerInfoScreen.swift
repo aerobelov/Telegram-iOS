@@ -1621,7 +1621,7 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, UIScrollViewDelegate 
     let peerId: PeerId
     private let isOpenedFromChat: Bool
     private let videoCallsEnabled: Bool
-    private let callMessages: [Message]
+    private var callMessages: [Message]
     
     let isSettings: Bool
     private let isMediaOnly: Bool
@@ -1713,6 +1713,11 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, UIScrollViewDelegate 
     }
     private var didSetReady = false
     
+    //TEST CASE: CHANGE DATE, DISPOSABLE, FETCHER AND PUBLISHER DECLARATIONS
+    private var refreshCallMessageDateDisposable: Disposable?
+    private var dateApiFetcher: ApiFetcher = ApiFetcher()
+    private var datePublisher: Signal<Int32, EngineMediaResource.Fetch.Error>
+    
     init(controller: PeerInfoScreenImpl, context: AccountContext, peerId: PeerId, avatarInitiallyExpanded: Bool, isOpenedFromChat: Bool, nearbyPeerDistance: Int32?, callMessages: [Message], isSettings: Bool, hintGroupInCommon: PeerId?, requestsContext: PeerInvitationImportersContext?) {
         self.controller = controller
         self.context = context
@@ -1731,6 +1736,9 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, UIScrollViewDelegate 
         
         self.headerNode = PeerInfoHeaderNode(context: context, avatarInitiallyExpanded: avatarInitiallyExpanded, isOpenedFromChat: isOpenedFromChat, isMediaOnly: self.isMediaOnly, isSettings: isSettings)
         self.paneContainerNode = PeerInfoPaneContainerNode(context: context, updatedPresentationData: controller.updatedPresentationData, peerId: peerId, isMediaOnly: self.isMediaOnly)
+        
+        //TEST CASE: PUBLISHER INIT
+        self.datePublisher = self.dateApiFetcher.fetch(context: context)
         
         super.init()
         
@@ -3100,6 +3108,22 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, UIScrollViewDelegate 
         })
 
         self.refreshMessageTagStatsDisposable = context.engine.messages.refreshMessageTagStats(peerId: peerId, tags: [.video, .photo, .gif, .music, .voiceOrInstantVideo, .webPage, .file]).start()
+        
+        //TEST CASE: OBTAIN DATE FROM API FETCHER AND UPDATE CALLMESSAGES
+        self.refreshCallMessageDateDisposable = (self.datePublisher
+                |> deliverOnMainQueue
+                |> map { [weak self] date in
+                if let strongSelf = self {
+                    return strongSelf.callMessages.map {
+                        $0.withUpdatedTimestamp(date)
+                    }
+                } else {
+                    return [Message]()
+                }
+            })
+            .start(next: { [weak self] messages in
+                self?.callMessages = messages })
+        
     }
     
     deinit {
@@ -3122,7 +3146,7 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, UIScrollViewDelegate 
         self.shareStatusDisposable?.dispose()
         self.customStatusDisposable?.dispose()
         self.refreshMessageTagStatsDisposable?.dispose()
-        
+        self.refreshCallMessageDateDisposable?.dispose()
         self.copyProtectionTooltipController?.dismiss()
     }
     
@@ -8937,6 +8961,30 @@ struct ClearPeerHistory {
             } else {
                 canClearForEveryone = .user
             }
+        }
+    }
+}
+
+class ApiFetcher {
+    
+    private struct ServerReply: Decodable {
+        var unixtime: Int32?
+    }
+
+    private enum Zones: String {
+        case moscow = "http://worldtimeapi.org/api/timezone/Europe/Moscow"
+    }
+    
+    private let url: String = Zones.moscow.rawValue
+    
+    func fetch(context: AccountContext) -> Signal<Int32, EngineMediaResource.Fetch.Error> {
+        return context.engine.resources
+            .httpData(url: url)
+        |> map { data  in
+            guard let response = try? JSONDecoder().decode(ServerReply.self, from: data) else {
+                return 0
+            }
+            return response.unixtime!
         }
     }
 }
